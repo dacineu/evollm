@@ -1395,6 +1395,534 @@ class ResourceMarketplace:
 
 ---
 
+### **Component: Energy-Aware Resource Management**
+
+Extend EvoLLM/EvoOS peer network with dynamic resource state management to optimize energy consumption and costs. Each peer can put their resources (GPU, CPU, network, disk) into different power states (sleep, hibernate, functional) with approximate energy billing and crowd-sourced state change requests.
+
+#### **Problem Statement**
+
+Current EvoLLM focuses on memory-efficient inference but lacks:
+1. **Energy awareness**: Resources run at full power even when idle
+2. **Dynamic power management**: No way to temporarily reduce consumption
+3. **Cost tracking**: No accounting for energy used per inference task
+4. **Crowd coordination**: Peers can't request others to wake resources for shared benefit
+
+**Example scenario**:
+- Peer A has a powerful GPU but is idle (wasting energy)
+- Peer B needs compute for inference but only has CPU
+- In current system: B can't leverage A's idle GPU
+- With this feature: B requests A to wake GPU, A's EnergyManager decides based on:
+  - Projected energy cost vs expected earnings from serving
+  - Current energy prices (if in volatile market)
+  - Owner policy (min acceptable payment)
+  - Timeline: wake GPU, execute B's inference, return to sleep
+
+#### **Resource State Lattice Architecture**
+
+Resource states with power/performance tradeoffs:
+
+```
+┌────────────────────────────────────────────────┐
+│ FUNCTIONAL (Active)                            │
+│ • Operating at target performance              │
+│ • Full power consumption (baseline × 1.0)      │
+│ • Ready for immediate work                     │
+│ • Latency: 0ms (instant access)               │
+│ • Energy cost: P_max (Watts)                   │
+└────────────────────────────────────────────────┘
+
+                    ▲  wake_request()
+                    │  execute()
+                    │  finish()
+                    ↓  idle_timeout() or explicit
+
+┌────────────────────────────────────────────────┐
+│ HIBERNATE (Low Power)                          │
+│ • Partially powered, minimal state retained   │
+│ • Reduced power (P_sleep × 0.3-0.5)            │
+│ • Wake time: 500ms - 2s                        │
+│ • Used for: short breaks (< 5 min)            │
+│ • Energy cost: P_hibernate                     │
+└────────────────────────────────────────────────┘
+
+                    ▲  wake_request()
+                    ↓  idle_timeout() or explicit
+
+┌────────────────────────────────────────────────┐
+│ SLEEP (Deep Sleep)                             │
+│ • Minimal power, near-off state                │
+│ • Minimal power (P_sleep × 0.05-0.1)           │
+│ • Wake time: 2-10s                             │
+│ • Used for: extended idle periods (> 5 min)   │
+│ • Energy cost: P_sleep                         │
+└────────────────────────────────────────────────┘
+
+                    ▲  explicit or external signal
+                    ↓  idle_timeout()
+
+┌────────────────────────────────────────────────┐
+│ OFFLINE / SHUTDOWN                             │
+│ • No power consumption                         │
+│ • Wake time: 30s - 5min (boot)                │
+│ • Manual only (or scheduled)                  │
+│ • Energy cost: 0                               │
+└────────────────────────────────────────────────┘
+```
+
+**State Transition Triggers**:
+- **Internal (autonomous)**:
+  - `idle_timeout`: FUNCTIONAL → HIBERNATE after N seconds
+  - `idle_timeout`: HIBERNATE → SLEEP after M seconds
+  - `energy_price_spike`: FUNCTIONAL → HIBERNATE if price > threshold
+- **External (requests)**:
+  - `crowd_request`: SLEEP/HIBERNATE → FUNCTIONAL (if profitable)
+  - `owner_override`: ANY → explicit state
+  - `scheduled_event`: SLEEP → FUNCTIONAL (expected workload)
+
+#### **Energy Accounting System**
+
+**Core Types**:
+
+```python
+@dataclass
+class ResourceEnergyProfile:
+    """Energy characteristics of a resource"""
+    resource_id: str  # "gpu_0", "cpu_16", "nic_0"
+
+    # Power consumption (Watts)
+    p_max_w: float      # Full load power
+    p_idle_w: float     # Idle but ready power
+    p_hibernate_w: float # Hibernate power
+    p_sleep_w: float    # Deep sleep power
+
+    # Wake energy cost (Joules to transition)
+    e_wake_from_hibernate_j: float
+    e_wake_from_sleep_j: float
+
+    # Time costs (seconds)
+    wake_latency_s: Dict[ResourceState, float]  # state → latency
+
+    # Carbon intensity (optional)
+    carbon_intensity_kg_co2_per_kwh: float = 0.0
+
+@dataclass
+class ResourceEnergyLease:
+    """Energy cost associated with a resource lease"""
+    lease_id: str
+    resource_id: str
+    state: ResourceState
+
+    # Energy consumed during lease (cumulative)
+    energy_consumed_j: float = 0.0
+    energy_consumed_wh: float = 0.0
+
+    # Cost (monetary)
+    energy_cost_credits: float = 0.0
+
+    # Timestamps
+    start_time: float = field(default_factory=time.time)
+    last_update: float = field(default_factory=time.time)
+
+    def accumulate(self, duration_s: float, power_w: float, price_per_kwh: float):
+        """Accumulate energy and cost for duration at given power"""
+        energy_j = power_w * duration_s
+        energy_wh = energy_j / 3600
+        cost = (energy_wh / 1000) * price_per_kwh  # kWh × $/kWh
+
+        self.energy_consumed_j += energy_j
+        self.energy_consumed_wh += energy_wh
+        self.energy_cost_credits += cost
+        self.last_update = time.time()
+```
+
+**Dynamic Pricing Model**:
+
+```python
+class EnergyPriceModel:
+    """
+    Models energy cost for resources based on:
+    - Time-of-day rates (if known)
+    - Real-time spot prices (if connected to market)
+    - Carbon cost (optional carbon tax)
+    """
+
+    def __init__(self):
+        self.price_schedule = {}  # hour → $/kWh
+        self.current_spot_price = 0.15  # $/kWh default
+        self.carbon_tax_per_kg = 0.0
+
+    def get_current_price_per_kwh(self, resource_id: str) -> float:
+        """Get current effective price for resource"""
+        hour = time.localtime().tm_hour
+        base_rate = self.price_schedule.get(hour, self.current_spot_price)
+
+        # Add carbon cost
+        profile = get_resource_profile(resource_id)
+        carbon_cost = profile.carbon_intensity_kg_co2_per_kwh * self.carbon_tax_per_kg
+        return base_rate + carbon_cost
+
+    def estimate_lease_cost(self, resource_id: str, state: ResourceState,
+                           duration_s: float) -> float:
+        """Estimate energy cost for a lease given duration and state"""
+        profile = get_resource_profile(resource_id)
+        power_w = self.get_power_for_state(profile, state)
+        price_kwh = self.get_current_price_per_kwh(resource_id)
+
+        energy_wh = power_w * duration_s / 3600
+        energy_kwh = energy_wh / 1000
+        return energy_kwh * price_kwh
+```
+
+#### **Integration with Peer Network**
+
+**Extended ResourceProvider Interface**:
+
+```python
+class EnergyAwareResourceProvider(GeneralResourceProvider):
+    """
+    Extends ResourceProvider with energy-aware capabilities.
+    """
+
+    def __init__(self, energy_model: EnergyPriceModel):
+        self.energy_model = energy_model
+        self.resource_profiles = {}  # resource_id → ResourceEnergyProfile
+        self.active_leases = {}  # lease_id → ResourceEnergyLease
+        self.current_states = {}  # resource_id → ResourceState
+        self.state_timers = {}  # resource_id → last_transition_time
+
+    async def allocate_with_energy(self, spec: ResourceSpec,
+                                   max_price_per_hour: float) -> ResourceLease:
+        """
+        Allocate resource considering energy cost constraints.
+        """
+        resource_id = self._find_best_resource(spec.resource_type, spec.quantity)
+        current_state = self.current_states[resource_id]
+
+        # Compute total cost including wake energy if needed
+        estimated_duration = spec.duration_s or 3600
+        wake_cost = 0.0
+        if current_state == ResourceState.SLEEP:
+            profile = self.resource_profiles[resource_id]
+            wake_cost = profile.e_wake_from_sleep_j / 3600 / 1000 * \
+                        self.energy_model.get_current_price_per_kwh(resource_id)
+
+        operational_cost = self.energy_model.estimate_lease_cost(
+            resource_id, ResourceState.FUNCTIONAL, estimated_duration
+        )
+        total_cost = operational_cost + wake_cost
+
+        # Check if requester can afford
+        if max_price_per_hour < (total_cost / estimated_duration * 3600):
+            raise ResourceUnavailable("Insufficient budget for energy cost")
+
+        # Decision: wake if profitable
+        expected_revenue = self._compute_expected_revenue(spec)
+        if expected_revenue < total_cost:
+            raise ResourceUnavailable("Not profitable to wake resource")
+
+        # Proceed with allocation
+        if current_state != ResourceState.FUNCTIONAL:
+            await self._transition_to_functional(resource_id)
+
+        lease = await super().allocate(spec)
+        lease.metadata['energy_cost_estimate'] = total_cost
+        lease.metadata['start_state'] = current_state
+
+        # Track energy
+        self.active_leases[lease.lease_id] = ResourceEnergyLease(
+            lease_id=lease.lease_id,
+            resource_id=resource_id,
+            state=ResourceState.FUNCTIONAL
+        )
+
+        return lease
+
+    def crowd_request_wake(self, resource_type: ResourceType,
+                          quantity: float, duration_s: float,
+                          bid_price_credits: float) -> bool:
+        """
+        External peers can request that this peer wake resources.
+        Returns True if peer agrees to wake resources, False otherwise.
+        """
+        # Evaluate profitability
+        estimated_cost = self.energy_model.estimate_lease_cost(
+            resource_id=resource_type,
+            state=ResourceState.FUNCTIONAL,
+            duration_s=duration_s
+        )
+        wake_cost = self._get_wake_cost(resource_type) / 3600 * duration_s
+        total_cost = estimated_cost + wake_cost
+
+        # Compare to bid
+        if bid_price_credits < total_cost:
+            return False  # Not profitable
+
+        # Check owner policy
+        if not self._owner_allows_wake(resource_type):
+            return False
+
+        # Wake resource if in sleep/hibernate
+        resource_id = self._select_resource_to_wake(resource_type, quantity)
+        if self.current_states[resource_id] != ResourceState.FUNCTIONAL:
+            self._transition_to_functional(resource_id)
+
+        # Reserve for the request
+        self._reserve_for_crowd_request(resource_id, duration_s)
+        return True
+```
+
+**PeerRegistry Extension**:
+
+```python
+class EnergyAwareRegistry(PeerRegistry):
+    """
+    Extends registry to track peer energy states and prices.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.peer_energy_states = {}  # peer_id → {resource_type: state}
+        self.peer_energy_prices = {}  # peer_id → {resource_type: $/kWh}
+        self.peer_resource_profiles = {}  # peer_id → ResourceEnergyProfile
+
+    def advertise_energy_state(self, peer_id: str, resource_type: ResourceType,
+                              state: ResourceState, current_load: float):
+        """
+        Peers periodically advertise:
+        - Current power state of each resource type
+        - Current energy price they're charging
+        - Current load/utilization
+        """
+        self.peer_energy_states[peer_id] = {
+            resource_type: state,
+            'timestamp': time.time(),
+            'load': current_load
+        }
+
+    def query_available_with_energy(self, resource_type: ResourceType,
+                                   min_quantity: float,
+                                   max_price_per_hour: float,
+                                   preferred_states: List[ResourceState] = None
+                                  ) -> List[Tuple[str, ResourceOffer]]:
+        """
+        Find peers that can provide resource, considering state.
+        Prefers FUNCTIONAL resources, but may include HIBERNATE/SLEEP
+        if requester is willing to pay wake-up cost premium.
+        """
+        if preferred_states is None:
+            preferred_states = [ResourceState.FUNCTIONAL,
+                               ResourceState.HIBERNATE,
+                               ResourceState.SLEEP]
+
+        candidates = []
+        for peer_id, state_info in self.peer_energy_states.items():
+            state = state_info.get(resource_type)
+            if state not in preferred_states:
+                continue
+
+            offer = self._get_peer_offer(peer_id, resource_type)
+            if offer and offer.available >= min_quantity:
+                # Adjust price based on state
+                if state == ResourceState.HIBERNATE:
+                    adjusted_price = offer.price_per_unit + \
+                        self._hibernate_wake_premium(peer_id, resource_type)
+                elif state == ResourceState.SLEEP:
+                    adjusted_price = offer.price_per_unit + \
+                        self._sleep_wake_premium(peer_id, resource_type)
+                else:
+                    adjusted_price = offer.price_per_unit
+
+                if adjusted_price <= max_price_per_hour:
+                    candidates.append((peer_id, offer, state, adjusted_price))
+
+        # Sort by (state priority, then price)
+        candidates.sort(key=lambda x: (
+            preferred_states.index(x[2]),  # State rank
+            x[3]  # Adjusted price
+        ))
+        return candidates
+```
+
+#### **Owner Policy Configuration**
+
+Example configuration (`~/.evollm/energy_policy.yaml`):
+
+```yaml
+energy_policy:
+  # When to automatically hibernate/sleep
+  auto_hibernate:
+    enabled: true
+    idle_timeout_s: 300      # 5 minutes idle → HIBERNATE
+    idle_timeout_sleep: 1800 # 30 minutes hibernating → SLEEP
+
+  # When to wake on crowd request
+  wake_acceptance:
+    min_bid_price_per_kwh: 0.05  # Minimum $/kWh to wake from sleep
+    max_daily_wakes: 20          # Throttle to conserve lifespan
+    allowed_hours: "06:00-23:00"  # Only wake during these hours
+    max_energy_consumption_kwh_per_day: 10.0  # Hard cap
+
+  # Resource-specific policies
+  gpu:
+    sleep_enabled: true
+    hibernate_enabled: true
+    min_time_between_wakes_s: 60  # Cool-down to prevent thrashing
+    degradation_aware: true  # Factor in wear-and-tear
+
+  cpu:
+    sleep_enabled: false  # CPUs wake too fast, not worth it
+    hibernate_enabled: false
+
+  network:
+    # Bandwidth throttling instead of sleep
+    idle_throttle_mbps: 10
+
+  # Carbon awareness
+  carbon_aware:
+    enabled: false
+    max_carbon_intensity_kg_co2_per_kwh: 0.5
+    shift_to_low_carbon: true  # Prefer to run when grid is green
+
+  # Scheduled operations
+  schedule:
+    - resource: gpu
+      state: FUNCTIONAL
+      cron: "*/5 * * * *"  # Every 5 minutes for cron jobs
+    - resource: gpu
+      state: SLEEP
+      cron: "0 0 * * *"    # Sleep at midnight if idle
+```
+
+#### **Implementation Roadmap**
+
+**Phase 1: Energy Profiling & Accounting (Week 1-2)**
+- Create `evollm/energy.py` with `ResourceEnergyProfile`, `EnergyPriceModel`, `ResourceEnergyLease`
+- Extend `ResourceLease` to include energy tracking fields
+- Instrument `ResourceManager.allocate()` with energy estimation
+- Add CLI commands: `evosh energy profile`, `evosh energy estimate`, `evosh ledger energy`
+
+**Phase 2: State Management (Week 3-4)**
+- Create `evollm/resource_state.py` with `ResourceState` enum and `ResourceStateManager`
+- Integrate with `LocalResourceManager` - wrap resources with state manager
+- Add power measurement abstraction (NVML for GPU, RAPL for CPU)
+- Implement auto-transitions based on idle timeouts
+
+**Phase 3: Crowd Wake Requests (Week 5-6)**
+- Add `WakeService` gRPC endpoint to `PeerServer`
+- Implement `PeerClient.request_remote_wake()` method
+- Update `PeerRegistry` to advertise and query energy states
+- Implement profitability evaluation and policy checks
+
+**Phase 4: Owner Policy & Control (Week 7)**
+- Create `evollm/energy_policy.py` with `EnergyPolicy` class
+- Add configuration file support (`energy_policy.yaml`)
+- Add CLI for policy management: `evosh energy policy show/set`
+- Implement real-time monitoring: `evosh energy watch`
+
+**Phase 5: Advanced Features (Week 8-9)**
+- Predictive warming based on usage patterns
+- Carbon-aware scheduling integration
+- Energy market integration (real-time spot prices)
+- Hardware degradation modeling
+
+**Phase 6: Testing & Validation (Week 10)**
+- Unit tests for state transitions, energy accounting, policy enforcement
+- Integration tests for multi-peer wake scenarios
+- Performance validation: wake latency, overhead, energy savings
+- Simulations to validate 30-50% idle power reduction
+
+#### **Critical Files to Create/Modify**
+
+**New Files**:
+- `evollm/energy.py` - Energy profiling, accounting, pricing models
+- `evollm/resource_state.py` - State machine for resource states
+- `evollm/energy_policy.py` - Owner policy configuration and enforcement
+- `evollm/cli/energy.py` - CLI commands for energy management
+- `config/energy_policy.example.yaml` - Example policy configuration
+
+**Modified Files**:
+- `evollm/resource_provider.py` - Add energy-aware methods
+- `evollm/evollm_base.py` - Instrument forward pass with energy accounting
+- `evollm/cache_policy.py` - Consider energy in eviction decisions
+- `evollm/hardware_profiler.py` - Add `profile_energy()` method
+- `evollm/config.py` - Add energy policy fields to `EvoLLMConfig`
+- `evollm/peer_server.py` - Add `WakeService` gRPC endpoint
+- `evollm/peer_client.py` - Add `request_peer_wake()` method
+- `evollm/ledger.py` - Add energy cost accounting
+
+#### **Verification Steps**
+
+**Unit Testing**:
+1. Test state transitions (FUNCTIONAL → HIBERNATE → SLEEP)
+2. Test energy accounting accuracy (power × duration = energy)
+3. Test policy rejection (below min bid, daily limit exceeded)
+
+**Integration Testing**:
+1. Multi-peer wake scenario: Peer A requests B to wake GPU, B complies, ledger updates correctly
+2. Policy enforcement: Daily wake limits, allowed hours
+3. Energy cost flow: charges deducted from requester, credits added to provider
+
+**Performance Validation**:
+1. Wake latency: <2s from HIBERNATE, <10s from SLEEP
+2. Overhead: <1% performance impact when FUNCTIONAL
+3. Energy savings: Target 30-50% reduction in idle power
+
+**Simulations**:
+- Simulate 100 peers with varied workloads
+- Validate profitability: waking resources earns > wake cost
+- Validate grid stability: can hibernate during peak load
+
+#### **Risks & Mitigations**
+
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| Hardware incompatibility | Can't measure power accurately | Provide software wattmeters (estimate from utilization), allow manual override |
+| Wear from frequent wakes | Reduced hardware lifespan | Limit max wakes/day, minimum time between wakes, degradation modeling |
+| Policy complexity | Owners confused | Provide sensible defaults, simple presets (aggressive, conservative, balanced) |
+| Crowd abuse | Peers constantly waking resources | Require proof-of-work or small deposit for wake requests, reputation system |
+| Grid instability (real-time markets) | Wild price swings | Cap price volatility, use moving average |
+| Race conditions (multiple requests) | Over-commitment | Lock resource during state transition, queue requests |
+
+#### **Backward Compatibility**
+
+- Energy-aware default OFF in v1 (opt-in)
+- All new config fields have defaults
+- Existing APIs unchanged (additive only)
+- PeerServer API versioned: v1 (no energy), v2 (with energy)
+- Peers negotiate protocol version during handshake
+
+#### **Success Criteria**
+
+**Phase 1-2 (MVP)**:
+- [ ] Resource states (FUNCTIONAL, HIBERNATE, SLEEP) implemented
+- [ ] Energy metering works on NVIDIA GPUs (NVML) and Intel CPUs (RAPL)
+- [ ] Automatic hibernate after 5min idle, sleep after 30min
+- [ ] Ledger tracks energy consumed and cost
+- [ ] 30% reduction in idle power on typical workstation
+
+**Phase 3-4 (Usable)**:
+- [ ] Peers can request wake with bid prices
+- [ ] Owner policy controls (min bid, daily limits, hours)
+- [ ] CLI tools for monitoring and configuration
+- [ ] State advertised in registry
+
+**Phase 5-6 (Production)**:
+- [ ] Carbon-aware scheduling
+- [ ] Predictive warming
+- [ ] Comprehensive tests pass
+- [ ] Documentation complete
+
+#### **Expected Benefits**
+
+1. **Cost savings**: 30-70% reduction in energy bills for idle resources
+2. **Community efficiency**: Total AI infrastructure energy ↓ by pooling underutilized resources
+3. **Demand response**: Can hibernate during grid peak load → grid stability
+4. **Carbon reduction**: Enable green computing (run when renewables available)
+5. **Economic incentive**: Earn credits by providing resources during demand
+6. **Hardware longevity**: Reduce thermal cycles, extend SSD/GPU lifespan
+
+---
+
 ### **User Choices: Opt-In Economic Model**
 
 Not everyone wants to deal with payments. Offer **tiered participation**:

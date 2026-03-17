@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EvoOS Simulation - Distributed AI Resource Management</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🌐 EvoOS Simulation</h1>
+            <p class="subtitle">Distributed AI Resource Management with Energy-Aware Peers</p>
+        </header>
+
+        <div class="main-content">
+            <!-- Left sidebar: Controls -->
+            <aside class="sidebar">
+                <div class="control-section">
+                    <h3>Simulation Control</h3>
+                    <div class="button-group">
+                        <button id="btn-start" class="btn btn-primary">▶ Start</button>
+                        <button id="btn-pause" class="btn btn-secondary" disabled>⏸ Pause</button>
+                        <button id="btn-reset" class="btn btn-danger">↺ Reset</button>
+                    </div>
+                    <div class="control-item">
+                        <label for="sim-speed">Speed:</label>
+                        <input type="range" id="sim-speed" min="0.1" max="3" step="0.1" value="1">
+                        <span id="sim-speed-value">1.0x</span>
+                    </div>
+                    <div class="control-item">
+                        <button id="btn-add-peer" class="btn btn-small">➕ Add Peer</button>
+                    </div>
+                </div>
+
+                <div class="control-section">
+                    <h3>Global Stats</h3>
+                    <div class="stat-grid">
+                        <div class="stat-item">
+                            <span class="stat-label">Peers</span>
+                            <span class="stat-value" id="stat-peers">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Active Leases</span>
+                            <span class="stat-value" id="stat-leases">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Wake Events</span>
+                            <span class="stat-value" id="stat-wakes">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Energy Today</span>
+                            <span class="stat-value" id="stat-energy">0.0 kWh</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="control-section">
+                    <h3>Energy Market</h3>
+                    <div class="energy-market">
+                        <div class="market-item">
+                            <span>Price:</span>
+                            <span class="price-value" id="energy-price">$0.15/kWh</span>
+                        </div>
+                        <div class="market-item">
+                            <span>Carbon:</span>
+                            <span class="carbon-value" id="carbon-intensity">0.3 kg/kWh</span>
+                        </div>
+                        <div class="market-item">
+                            <span>Time:</span>
+                            <span class="time-value" id="sim-time">00:00</span>
+                        </div>
+                    </div>
+                    <div class="control-item">
+                        <label>
+                            <input type="checkbox" id="dynamic-pricing">
+                            Dynamic pricing
+                        </label>
+                    </div>
+                    <div class="control-item">
+                        <button id="btn-price-spike" class="btn btn-warning btn-small">⚡ Price Spike</button>
+                    </div>
+                </div>
+
+                <div class="control-section" id="peer-details" style="display: none;">
+                    <h3>Selected Peer</h3>
+                    <div class="peer-info">
+                        <p><strong>ID:</strong> <span id="peer-id">-</span></p>
+                        <p><strong>State:</strong> <span id="peer-state" class="state-badge">-</span></p>
+                        <p><strong>Balance:</strong> <span id="peer-balance">$0.00</span></p>
+                        <p><strong>Wakes Today:</strong> <span id="peer-wakes">0/50</span></p>
+
+                        <h4>Resources</h4>
+                        <div id="peer-resources"></div>
+
+                        <h4>Active Leases</h4>
+                        <div id="peer-leases"></div>
+
+                        <h4>Policy</h4>
+                        <div class="policy-editor">
+                            <div class="control-item">
+                                <label>Min Bid ($/kWh):</label>
+                                <input type="number" id="policy-min-bid" step="0.01" min="0">
+                            </div>
+                            <div class="control-item">
+                                <label>Max Daily Wakes:</label>
+                                <input type="number" id="policy-max-wakes" min="1" max="1000">
+                            </div>
+                            <div class="control-item">
+                                <label>Auto-hibernate (s):</label>
+                                <input type="number" id="policy-idle-timeout" min="10" max="3600">
+                            </div>
+                            <button id="btn-apply-policy" class="btn btn-small">Apply Policy</button>
+                        </div>
+
+                        <div class="control-item">
+                            <button id="btn-request-wake" class="btn btn-small">📡 Request Wake</button>
+                        </div>
+
+                        <div id="wake-request-form" style="display: none;" class="wake-form">
+                            <div class="control-item">
+                                <label>Resource:</label>
+                                <select id="wake-resource-type">
+                                    <option value="gpu_memory_gb">GPU Memory</option>
+                                    <option value="cpu_cores">CPU Cores</option>
+                                    <option value="ram_gb">RAM</option>
+                                </select>
+                            </div>
+                            <div class="control-item">
+                                <label>Quantity:</label>
+                                <input type="range" id="wake-quantity" min="1" max="32" value="4">
+                                <span id="wake-quantity-value">4</span>
+                            </div>
+                            <div class="control-item">
+                                <label>Duration (s):</label>
+                                <input type="range" id="wake-duration" min="60" max="3600" step="60" value="300">
+                                <span id="wake-duration-value">300</span>
+                            </div>
+                            <div class="control-item">
+                                <label>Bid ($/kWh):</label>
+                                <input type="number" id="wake-bid" step="0.01" min="0.01" max="1.00" value="0.06">
+                            </div>
+                            <button id="btn-send-wake" class="btn btn-primary btn-small">Send Request</button>
+                            <button id="btn-cancel-wake" class="btn btn-secondary btn-small">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="control-section">
+                    <h3>Preset Scenarios</h3>
+                    <div class="scenario-buttons">
+                        <button class="btn btn-small" onclick="loadScenario('small')">Small (5 peers)</button>
+                        <button class="btn btn-small" onclick="loadScenario('large')">Large (20 peers)</button>
+                        <button class="btn btn-small" onclick="loadScenario('energy-crisis')">Energy Crisis</button>
+                        <button class="btn btn-small" onclick="loadScenario('datacenter')">Data Center</button>
+                    </div>
+                </div>
+
+                <div class="control-section">
+                    <h3>Event Log</h3>
+                    <div id="event-log" class="event-log"></div>
+                </div>
+            </aside>
+
+            <!-- Main canvas area -->
+            <main class="canvas-container">
+                <canvas id="sim-canvas"></canvas>
+                <div class="canvas-overlay">
+                    <div class="legend">
+                        <h4>Resource States</h4>
+                        <div class="legend-item">
+                            <span class="legend-color functional"></span>
+                            <span>FUNCTIONAL (active)</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-color hibernate"></span>
+                            <span>HIBERNATE (low power)</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-color sleep"></span>
+                            <span>SLEEP (deep sleep)</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-color offline"></span>
+                            <span>OFFLINE (shutdown)</span>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+
+        <footer>
+            <p>
+                <strong>EvoOS</strong> - A distributed operating system for AI resources.
+                <a href="https://github.com/anthropics/claude-code" target="_blank">EvoLLM Project</a>
+            </p>
+            <p class="tech-info">
+                Unified Resource Abstraction • Energy-Aware Management • Peer-to-Peer Coordination
+            </p>
+        </footer>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/energy.js"></script>
+    <script src="js/resource.js"></script>
+    <script src="js/peer.js"></script>
+    <script src="js/lease.js"></script>
+    <script src="js/wake_request.js"></script>
+    <script src="js/renderer.js"></script>
+    <script src="js/simulation.js"></script>
+    <script src="js/controls.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
