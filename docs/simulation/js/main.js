@@ -24,8 +24,30 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initialize with a small scenario
     simulation.getScenario('small');
 
-    // Start automatically? No, wait for user to click Start
-    // simulation.start();
+    // Debug: Check peers were created
+    console.log(`Created ${simulation.peers.length} peers`);
+    simulation.peers.forEach(p => {
+        console.log(`Peer ${p.id}: total=${p.totalResources()}, state=${p.state}`);
+    });
+
+    // Ensure canvas is properly sized before starting
+    setTimeout(() => {
+        // Resize to get correct dimensions
+        simulation.renderer.resize();
+        console.log(`Canvas size: ${simulation.canvas.width}x${simulation.canvas.height}`);
+
+        // Start simulation
+        simulation.start();
+
+        // Update button states
+        const btnStart = document.getElementById('btn-start');
+        const btnPause = document.getElementById('btn-pause');
+        if (btnStart && btnPause) {
+            btnStart.disabled = true;
+            btnPause.disabled = false;
+        }
+        console.log('Simulation auto-started');
+    }, 200); // Wait for layout to settle
 
     console.log('EvoOS Simulation initialized');
     console.log('Click "Start" to begin the simulation');
