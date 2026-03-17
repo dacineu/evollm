@@ -1,7 +1,7 @@
 // Main entry point
 // Initialize simulation and controls when page loads
 
-document.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('load', () => {
     // Get canvas
     const canvas = document.getElementById('sim-canvas');
     if (!canvas) {
@@ -21,42 +21,35 @@ document.addEventListener('DOMContentLoaded', () => {
         simulation.renderer.resize();
     });
 
+    // Ensure canvas is sized correctly (needs CSS to be loaded)
+    simulation.renderer.resize();
+
     // Initialize with a small scenario
     simulation.getScenario('small');
 
     // Debug: Check peers were created
     console.log(`Created ${simulation.peers.length} peers`);
     simulation.peers.forEach(p => {
-        console.log(`Peer ${p.id}: total=${p.totalResources()}, state=${p.state}`);
+        console.log(`Peer ${p.id}: total=${p.totalResources()}, state=${p.state}, resources=`, p.resources);
     });
 
-    // Ensure canvas is properly sized before starting
-    setTimeout(() => {
-        // Resize to get correct dimensions
-        simulation.renderer.resize();
-        console.log(`Canvas size: ${simulation.canvas.width}x${simulation.canvas.height}`);
+    // Log canvas dimensions
+    console.log(`Canvas size: ${simulation.canvas.width}x${simulation.canvas.height}`);
 
-        // Start simulation
-        simulation.start();
+    // Start simulation automatically
+    simulation.start();
 
-        // Update button states
-        const btnStart = document.getElementById('btn-start');
-        const btnPause = document.getElementById('btn-pause');
-        if (btnStart && btnPause) {
-            btnStart.disabled = true;
-            btnPause.disabled = false;
-        }
-        console.log('Simulation auto-started');
-    }, 200); // Wait for layout to settle
+    // Update button states
+    const btnStart = document.getElementById('btn-start');
+    const btnPause = document.getElementById('btn-pause');
+    if (btnStart && btnPause) {
+        btnStart.disabled = true;
+        btnPause.disabled = false;
+    }
 
-    console.log('EvoOS Simulation initialized');
-    console.log('Click "Start" to begin the simulation');
-    console.log('Click on peers to view details and send wake requests');
-
-    // Log instructions
-    simulation.log('Welcome to EvoOS Simulation!', 'info');
-    simulation.log('Click "Start" to begin. Click peers to select them.', 'info');
-    simulation.log('Try "Small" preset scenario to see energy-aware peers in action.', 'info');
+    console.log('Simulation auto-started');
+    simulation.log('Simulation running - you should see peers on the canvas', 'success');
+    simulation.log('Click on any peer to view details and send wake requests', 'info');
 });
 
 // Expose simulation globally for console access
