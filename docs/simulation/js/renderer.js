@@ -14,10 +14,26 @@ class Renderer {
     }
 
     resize() {
-        // Resize canvas to container
+        // Resize canvas to container with fallbacks
         const container = this.canvas.parentElement;
-        this.canvas.width = container.clientWidth;
-        this.canvas.height = container.clientHeight;
+        let width = container.clientWidth;
+        let height = container.clientHeight;
+
+        // If container has no size, fall back to window size minus known UI elements
+        if (width === 0 || height === 0) {
+            console.warn('Container has zero size, falling back to window size');
+            width = window.innerWidth - 350;  // Approximate sidebar width (320px) + padding
+            height = window.innerHeight - 120; // Approximate header + footer height
+        }
+
+        // Minimum reasonable size
+        width = Math.max(width, 800);
+        height = Math.max(height, 600);
+
+        this.canvas.width = width;
+        this.canvas.height = height;
+
+        console.log(`Canvas resized to: ${width}x${height}`);
     }
 
     clear() {
