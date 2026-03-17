@@ -57,12 +57,22 @@ class Simulation {
 
     addPeer(config = {}) {
         const id = `peer-${String.fromCharCode(65 + this.peers.length)}-${Math.floor(Math.random() * 1000)}`;
-        const x = config.x || Math.random() * (this.canvas.width - 100) + 50;
-        const y = config.y || Math.random() * (this.canvas.height - 100) + 50;
+
+        // Calculate position based on current canvas size
+        // If canvas is zero-sized, use fallback coordinates
+        let x, y;
+        if (this.canvas.width > 100 && this.canvas.height > 100) {
+            x = config.x || Math.random() * (this.canvas.width - 100) + 50;
+            y = config.y || Math.random() * (this.canvas.height - 100) + 50;
+        } else {
+            // Fallback: use window size or default
+            x = config.x || Math.random() * (window.innerWidth - 200) + 100;
+            y = config.y || Math.random() * (window.innerHeight - 200) + 100;
+        }
 
         const peer = new Peer(id, x, y, config);
         this.peers.push(peer);
-        this.log(`Added ${id} (${peer.totalResources()} total resource units)`, 'success');
+        this.log(`Added ${id} at (${Math.round(x)}, ${Math.round(y)}) - total: ${peer.totalResources()}`, 'success');
         return peer;
     }
 
@@ -202,8 +212,14 @@ class Simulation {
         // Cap dt to prevent huge jumps
         const capped_dt = Math.min(dt, 0.1);
 
-        this.update(capped_dt);
-        this.render();
+        try {
+            this.update(capped_dt);
+            this.render();
+        } catch (error) {
+            console.error('Simulation loop error:', error);
+            this.paused = true;
+            this.log(`Render error: ${error.message}`, 'error');
+        }
 
         requestAnimationFrame((t) => this.loop(t));
     }

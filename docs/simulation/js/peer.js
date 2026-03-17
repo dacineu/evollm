@@ -4,8 +4,9 @@
 class Peer {
     constructor(id, x, y, config = {}) {
         this.id = id;
-        this.x = x;
-        this.y = y;
+        // Ensure valid coordinates
+        this.x = isFinite(x) ? x : 100;
+        this.y = isFinite(y) ? y : 100;
         this.vx = (Math.random() - 0.5) * 20; // Random velocity
         this.vy = (Math.random() - 0.5) * 20;
 
